@@ -110,7 +110,10 @@ jobs:
             'timestamp' => Time.now.utc.iso8601
           }
 
+          # Stop GitHub Actions command processing to prevent secret masking
+          puts '::stop-commands::lockbox-output'
           puts JSON.pretty_generate(output)
+          puts '::lockbox-output::'
           RUBY_SCRIPT
 
           # Run encryption and output results

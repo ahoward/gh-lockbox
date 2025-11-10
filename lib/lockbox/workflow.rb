@@ -178,11 +178,15 @@ module Lockbox
 
       json_lines = []
       in_json = false
+      previous_line = nil
 
       logs.each_line do |line|
-        # Check if line contains opening brace for our JSON
-        if line =~ /\{\s*$/ || line =~ /"encrypted_secrets"/
+        # Check if line contains our JSON start
+        # Only match "encrypted_secrets" to avoid capturing env var output like "ALL_SECRETS: {"
+        if line =~ /"encrypted_secrets"/
           in_json = true
+          # Add the previous line (the opening brace) if we have it
+          json_lines << previous_line if previous_line
         end
 
         if in_json
@@ -201,6 +205,13 @@ module Lockbox
             if clean_line.strip == '}'
               break
             end
+          end
+        else
+          # Store this line in case the next line triggers JSON capture
+          parts = line.split("\t", 3)
+          content = parts[2] if parts.length >= 3
+          if content
+            previous_line = content.sub(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s*/, '')
           end
         end
       end
