@@ -264,8 +264,8 @@ cleanup_test_secrets "TEST_REMOVE"
 list_before=$(./bin/gh-lockbox list)
 assert_contains "$list_before" "TEST_REMOVE" "Secret should exist before removal"
 
-# Remove it
-./bin/gh-lockbox remove TEST_REMOVE
+# Remove it (with --force to skip confirmation)
+./bin/gh-lockbox remove TEST_REMOVE --force
 
 # Verify it's gone
 list_after=$(./bin/gh-lockbox list)

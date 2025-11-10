@@ -128,12 +128,14 @@ module Lockbox
     end
 
     def cmd_remove
-      if @params.empty?
-        error "Usage: gh-lockbox remove <name>"
+      # Check for --force flag
+      force = @params.include?('--force') || @params.include?('-f')
+      name = @params.find { |p| !p.start_with?('-') }
+
+      if name.nil?
+        error "Usage: gh-lockbox remove <name> [--force]"
         exit 1
       end
-
-      name = @params[0]
 
       # Check if secret exists
       unless Lockbox::GitHub.secret_exists?(name)
@@ -141,8 +143,8 @@ module Lockbox
         exit 1
       end
 
-      # Confirm deletion
-      unless Lockbox::Pin.confirm("Remove secret '#{name}' and its workflow?", default: false)
+      # Confirm deletion (skip if --force)
+      unless force || Lockbox::Pin.confirm("Remove secret '#{name}' and its workflow?", default: false)
         puts "Cancelled."
         exit 0
       end

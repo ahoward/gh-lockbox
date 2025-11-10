@@ -15,6 +15,11 @@ name: Lockbox Recovery
         required: true
         type: string
 
+# Queue recoveries instead of cancelling
+concurrency:
+  group: lockbox-recovery
+  cancel-in-progress: false
+
 jobs:
   recover:
     runs-on: ubuntu-latest
