@@ -113,7 +113,7 @@ cleanup_test_secrets() {
 
 echo -e "${BLUE}╔═══════════════════════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║                                                                               ║${NC}"
-echo -e "${BLUE}║                   gh-lockbox Comprehensive Test Suite                         ║${NC}"
+echo -e "${BLUE}║                💰 SHOW ME THE MONEY 💰 Test Suite 💰                          ║${NC}"
 echo -e "${BLUE}║                                                                               ║${NC}"
 echo -e "${BLUE}╚═══════════════════════════════════════════════════════════════════════════════╝${NC}"
 
@@ -441,6 +441,7 @@ test_pass
 echo
 echo -e "${GREEN}╔═══════════════════════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${GREEN}║                                                                               ║${NC}"
+echo -e "${GREEN}║                   💰💰💰 SHOW ME THE MONEY! 💰💰💰                              ║${NC}"
 echo -e "${GREEN}║                        ALL TESTS PASSED! 🎉                                   ║${NC}"
 echo -e "${GREEN}║                                                                               ║${NC}"
 echo -e "${GREEN}╚═══════════════════════════════════════════════════════════════════════════════╝${NC}"
