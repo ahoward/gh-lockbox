@@ -254,13 +254,11 @@ module Lockbox
         info "Waiting for workflow to complete..."
         Lockbox::GitHub.wait_for_workflow(run_id)
 
-        # Step 7: Retrieve encrypted secrets
+        # Step 7: Download encrypted secrets artifact
         info "Retrieving encrypted secrets..."
-        logs = Lockbox::GitHub.get_workflow_logs(run_id)
-
-        encrypted_secrets_map = Lockbox::Workflow.extract_encrypted_secrets(logs)
+        encrypted_secrets_map = Lockbox::GitHub.download_encrypted_artifact(run_id)
         unless encrypted_secrets_map
-          error "Failed to extract encrypted secrets from workflow logs"
+          error "Failed to retrieve encrypted secrets artifact"
           error "The workflow may have failed. Check: gh run view #{run_id}"
           exit 1
         end

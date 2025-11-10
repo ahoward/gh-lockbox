@@ -223,6 +223,42 @@ module Lockbox
       stdout
     end
 
+    # Downloads encrypted secrets artifact from workflow run
+    # @param run_id [String] Workflow run ID
+    # @return [Hash, nil] Map of secret names to encrypted blobs, or nil if failed
+    def download_encrypted_artifact(run_id)
+      require 'tmpdir'
+      require 'fileutils'
+
+      Dir.mktmpdir do |tmpdir|
+        # Download artifact using gh CLI
+        cmd = ['gh', 'run', 'download', run_id, '--name', 'encrypted-secrets', '--dir', tmpdir]
+        _stdout, stderr, status = Open3.capture3(*cmd)
+
+        unless status.success?
+          $stderr.puts "Failed to download artifact: #{stderr.strip}"
+          return nil
+        end
+
+        # Read the JSON file
+        json_file = File.join(tmpdir, 'encrypted_output.json')
+        unless File.exist?(json_file)
+          $stderr.puts "Artifact file not found: #{json_file}"
+          return nil
+        end
+
+        json_content = File.read(json_file)
+        parsed = JSON.parse(json_content)
+        parsed['encrypted_secrets']
+      rescue JSON::ParserError => e
+        $stderr.puts "Failed to parse artifact JSON: #{e.message}"
+        nil
+      rescue => e
+        $stderr.puts "Failed to download artifact: #{e.message}"
+        nil
+      end
+    end
+
     # Checks if gh CLI is installed and authenticated
     # @return [Boolean] true if gh CLI is ready
     def gh_ready?
