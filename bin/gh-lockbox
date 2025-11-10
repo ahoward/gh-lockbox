@@ -29,8 +29,8 @@ module Lockbox
         cmd_recover
       when 'dotenv'
         cmd_dotenv
-      when 'cleanup-gists', 'cleanup'
-        cmd_cleanup_gists
+      when 'cleanup'
+        cmd_cleanup
       when 'verify', 'test'
         cmd_verify
       when 'help', '--help', '-h', nil
@@ -194,14 +194,10 @@ module Lockbox
         error "Store a secret first with: gh-lockbox store <name>"
         exit 1
       end
-      gist_id = nil
-      temp_key = nil
+      private_key_pem = nil
       workflow_path = nil
       workflow_file = nil
       lock_acquired = false
-
-      # Note: gist cleanup is handled explicitly after workflow completes
-      # at_exit cleanup would delete gist before workflow can fetch it
 
       # Check if all secrets exist
       missing_secrets = secret_names.reject { |name| Lockbox::GitHub.secret_exists?(name) }
@@ -217,73 +213,48 @@ module Lockbox
         Lockbox::GitHub.acquire_lock(lock_name: 'recovery', timeout: 300, retry_interval: 5)
         lock_acquired = true
         info "Lock acquired"
-        # Step 1: Backup existing workflow and generate one with literal secret names
+
+        # Step 1: Ensure generic workflow exists
         workflow_file = Lockbox::Workflow.generic_workflow_filename
-        workflow_path = Lockbox::Workflow.generic_workflow_path
-        backup_path = "#{workflow_path}.backup"
 
         # Create generic workflow if it doesn't exist
         unless Lockbox::Workflow.generic_workflow_exists?
           info "Creating initial generic workflow..."
           Lockbox::Workflow.create_generic_workflow
-          system("git", "add", workflow_path)
+          system("git", "add", Lockbox::Workflow.generic_workflow_path)
           system("git", "commit", "-m", "Add lockbox generic recovery workflow")
           system("git", "push")
           info "Waiting for GitHub to index workflow..."
           sleep 10
         end
 
-        # Backup the current workflow
-        FileUtils.cp(workflow_path, backup_path)
+        # Step 2: Generate ephemeral RSA keypair
+        info "Generating ephemeral keypair..."
+        keypair = Lockbox::Crypto.generate_keypair
+        private_key_pem = keypair[:private_key]
+        public_key_pem = keypair[:public_key]
 
-        # Generate workflow with literal secret names (overwrites existing)
-        info "Updating workflow for #{secret_names.join(', ')}..."
-        Lockbox::Workflow.create_dynamic_workflow(secret_names, workflow_name: workflow_file)
+        # Store private key locally (will be deleted after recovery)
+        key_name = secret_names.size == 1 ? secret_names.first : 'multi'
+        Lockbox::GitHub.store_private_key(key_name, private_key_pem)
 
-        # Step 2: Commit and push updated workflow
-        info "Pushing updated workflow..."
-        system("git", "add", workflow_path)
-        system("git", "commit", "-m", "Update lockbox recovery workflow for recovery", out: File::NULL)
-
-        unless system("git", "push", out: File::NULL, err: File::NULL)
-          # Restore backup on push failure
-          FileUtils.mv(backup_path, workflow_path)
-          error "Failed to push workflow to remote"
-          exit 1
-        end
-
-        # GitHub needs time to process workflow file updates
-        info "Waiting for GitHub to process update..."
-        sleep 20
-
-        # Step 3: Cleanup old gists
-        info "Cleaning up old recovery gists..."
-        Lockbox::GitHub.cleanup_old_recovery_gists
-
-        # Step 4: Generate temp UUIDv7 key
-        info "Generating temporary recovery key..."
-        temp_key = Lockbox::GitHub.generate_temp_key
-
-        # Step 5: Create recovery gist with temp key
-        info "Creating recovery gist..."
-        gist_id = Lockbox::GitHub.create_recovery_gist(temp_key, secret_names)
-
-        # Step 6: Trigger workflow with gist_id and secret_names (use main ref explicitly)
+        # Step 3: Trigger workflow with public_key and secret_names (use main ref explicitly)
+        # Note: No workflow modification needed - generic workflow accepts inputs
         info "Triggering recovery workflow..."
         run_id = Lockbox::GitHub.trigger_workflow(
           workflow_file,
           inputs: {
-            "gist_id" => gist_id,
+            "public_key" => public_key_pem,
             "secret_names" => secret_names.join(',')
           },
           ref: 'main'
         )
 
-        # Step 7: Wait for workflow
+        # Step 6: Wait for workflow
         info "Waiting for workflow to complete..."
         Lockbox::GitHub.wait_for_workflow(run_id)
 
-        # Step 8: Retrieve encrypted secrets
+        # Step 7: Retrieve encrypted secrets
         info "Retrieving encrypted secrets..."
         logs = Lockbox::GitHub.get_workflow_logs(run_id)
 
@@ -294,26 +265,17 @@ module Lockbox
           exit 1
         end
 
-        # Step 9: Decrypt all secrets
+        # Step 8: Decrypt all secrets with private key (hybrid decryption)
         info "Decrypting secrets..."
         decrypted_secrets = {}
         encrypted_secrets_map.each do |name, encrypted_blob|
-          decrypted_secrets[name] = Lockbox::Crypto.decrypt(encrypted_blob, temp_key)
+          decrypted_secrets[name] = Lockbox::Crypto.decrypt_hybrid(encrypted_blob, private_key_pem)
         end
 
-        # Step 10: Delete gist
-        info "Cleaning up recovery gist..."
-        Lockbox::GitHub.delete_gist(gist_id)
-        gist_id = nil  # Mark as deleted so at_exit doesn't try again
-
-        # Step 11: Restore original workflow file (AFTER workflow completes)
-        if backup_path && File.exist?(backup_path)
-          info "Restoring original workflow..."
-          FileUtils.mv(backup_path, workflow_path)
-          system("git", "add", workflow_path)
-          system("git", "commit", "-m", "Restore generic lockbox recovery workflow", out: File::NULL)
-          system("git", "push", out: File::NULL, err: File::NULL)
-        end
+        # Step 9: Delete private key
+        info "Cleaning up private key..."
+        Lockbox::GitHub.delete_private_key(key_name)
+        private_key_pem = nil  # Mark as deleted
 
         # Output the secret(s)
         if secret_names.size == 1
@@ -337,22 +299,11 @@ module Lockbox
         error "Recovery failed: #{e.message}"
         exit 1
       ensure
-        # Cleanup gist if still exists
-        if gist_id
+        # Cleanup private key if still exists
+        if private_key_pem
           begin
-            Lockbox::GitHub.delete_gist(gist_id)
-          rescue
-            # Ignore cleanup errors
-          end
-        end
-
-        # Restore workflow backup if it exists (in case of errors)
-        if backup_path && File.exist?(backup_path)
-          begin
-            FileUtils.mv(backup_path, workflow_path)
-            system("git", "add", workflow_path)
-            system("git", "commit", "-m", "Restore generic lockbox recovery workflow")
-            system("git", "push", out: File::NULL, err: File::NULL)
+            key_name = secret_names.size == 1 ? secret_names.first : 'multi'
+            Lockbox::GitHub.delete_private_key(key_name)
           rescue
             # Ignore cleanup errors
           end
@@ -371,55 +322,17 @@ module Lockbox
       end
     end
 
-    def cmd_cleanup_gists
+    def cmd_cleanup
       begin
-        info "Cleaning up old recovery gists..."
-
-        username = Lockbox::GitHub.get_current_username
-        info "Searching for gh-lockbox-recovery gists for user: #{username}"
-
-        # List recent gists
-        output = `gh gist list --limit 50 2>&1`
-        unless $?.success?
-          error "Failed to list gists: #{output}"
-          exit 1
+        info "Cleaning up ephemeral private keys..."
+        count = Lockbox::GitHub.cleanup_private_keys
+        if count > 0
+          success "Deleted #{count} private key(s)"
+        else
+          info "No private keys to clean up"
         end
-
-        # Find gh-lockbox-recovery gists
-        gist_lines = output.lines.select { |line| line.include?("gh-lockbox-recovery-#{username}") }
-
-        if gist_lines.empty?
-          success "No recovery gists found. All clean!"
-          return
-        end
-
-        puts
-        info "Found #{gist_lines.length} recovery gist(s):"
-        puts
-
-        deleted_count = 0
-        gist_lines.each do |line|
-          # Extract gist ID (first column)
-          gist_id = line.split.first
-
-          # Extract description/filename
-          description = line.strip
-
-          puts "  #{gist_id} - #{description}"
-
-          # Delete the gist
-          if Lockbox::GitHub.delete_gist(gist_id)
-            deleted_count += 1
-          else
-            error "  Failed to delete gist: #{gist_id}"
-          end
-        end
-
-        puts
-        success "Deleted #{deleted_count} recovery gist(s)"
-
       rescue Lockbox::GitHub::GitHubError => e
-        error "Failed to cleanup gists: #{e.message}"
+        error "Failed to cleanup: #{e.message}"
         exit 1
       end
     end
@@ -778,7 +691,7 @@ module Lockbox
           dotenv <pull|push> [file] Pull secrets to .env or push .env to GitHub
           list                      List all stored secrets
           remove <name>             Remove a secret and its workflow
-          cleanup-gists             Manually cleanup old recovery gists
+          cleanup                   Cleanup ephemeral private keys
           verify                    Run automated tests to verify installation
           help                      Show this help message
           version                   Show version information
@@ -815,8 +728,8 @@ module Lockbox
           # List all secrets
           gh-lockbox list
 
-          # Cleanup old recovery gists
-          gh-lockbox cleanup-gists
+          # Cleanup ephemeral private keys
+          gh-lockbox cleanup
 
           # Remove a secret
           gh-lockbox remove my-api-key
