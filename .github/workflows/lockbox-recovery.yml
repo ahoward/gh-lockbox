@@ -102,7 +102,27 @@ jobs:
         env:
           TEMP_KEY: ${{ steps.find_key.outputs.temp_key }}
           SECRET_NAMES: ${{ inputs.secret_names }}
-          SECRET_0: ${{ secrets.FOO }}
+          SECRET_0: ${{ secrets.DOTENV_TEST_KEY_1 }}
+          SECRET_1: ${{ secrets.DOTENV_TEST_KEY_2 }}
+          SECRET_2: ${{ secrets.DOTENV_WITH_SPACES }}
+          SECRET_3: ${{ secrets.FINAL }}
+          SECRET_4: ${{ secrets.FOO }}
+          SECRET_5: ${{ secrets.LOCKBOX_FOO_VALUE }}
+          SECRET_6: ${{ secrets.LOCKBOX_LOCKBOX_LOCKBOX_VERIFY_TEST_1762555281_PIN_VALUE }}
+          SECRET_7: ${{ secrets.LOCKBOX_TEST_SECRET_DEBUG_VALUE }}
+          SECRET_8: ${{ secrets.MYKEY }}
+          SECRET_9: ${{ secrets.MY_API_KEY }}
+          SECRET_10: ${{ secrets.NEWTEST }}
+          SECRET_11: ${{ secrets.REALTEST }}
+          SECRET_12: ${{ secrets.SIMPLE_TEST }}
+          SECRET_13: ${{ secrets.SINGLE_TEST }}
+          SECRET_14: ${{ secrets.TESTBAR }}
+          SECRET_15: ${{ secrets.TESTKEY }}
+          SECRET_16: ${{ secrets.TEST_FROM_STDIN }}
+          SECRET_17: ${{ secrets.TEST_REAL }}
+          SECRET_18: ${{ secrets.TEST_SECRET }}
+          SECRET_19: ${{ secrets.TEST_WITH_ARG }}
+          SECRET_20: ${{ secrets.WORKS }}
         run: |
           echo "::notice::Recovering secrets: ${{ inputs.secret_names }}"
 
