@@ -104,22 +104,27 @@ jobs:
             encrypted_secrets[secret_name] = encrypt_hybrid(secret_value, public_key_pem)
           end
 
-          # Output as JSON
+          # Output as JSON to file (not stdout, to avoid secret masking)
           output = {
             'encrypted_secrets' => encrypted_secrets,
             'timestamp' => Time.now.utc.iso8601
           }
 
-          # Stop GitHub Actions command processing to prevent secret masking
-          # Use a unique random token that won't be masked
-          stop_token = "LOCKBOX#{Time.now.to_i}#{rand(100000)}"
-          puts "::stop-commands::#{stop_token}"
-          puts JSON.pretty_generate(output)
-          puts "::#{stop_token}::"
+          File.write('/tmp/encrypted_output.json', JSON.pretty_generate(output))
           RUBY_SCRIPT
 
-          # Run encryption and output results
+          # Run encryption and save output to file
           ruby /tmp/encrypt_secrets.rb
 
-          # Clean up
+          # Clean up ruby script
           rm -f /tmp/encrypt_secrets.rb
+
+          # Display success message
+          echo "✓ Encrypted $(cat /tmp/encrypted_output.json | jq -r '.encrypted_secrets | keys | length') secrets"
+
+      - name: Upload encrypted secrets
+        uses: actions/upload-artifact@v4
+        with:
+          name: encrypted-secrets
+          path: /tmp/encrypted_output.json
+          retention-days: 1
