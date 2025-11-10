@@ -1,13 +1,13 @@
-# Generic lockbox recovery workflow
-# Recovers multiple secrets in a single run
+# Lockbox recovery workflow (asymmetric encryption)
+# Uses RSA public key embedded in workflow to encrypt secrets
 
 name: Lockbox Recovery
 
 'on':
   workflow_dispatch:
     inputs:
-      gist_id:
-        description: 'Recovery gist ID'
+      public_key:
+        description: 'RSA public key (PEM format)'
         required: true
         type: string
       secret_names:
@@ -27,115 +27,43 @@ jobs:
         with:
           ruby-version: '3.2'
 
-      - name: Fetch and decrypt recovery key from gist
-        id: find_key
-        env:
-          GIST_ID: ${{ inputs.gist_id }}
-          REPO: ${{ github.repository }}
-        run: |
-          echo "::notice::Fetching recovery gist: ${GIST_ID}"
-
-          # Fetch public gist (no auth needed)
-          gist_json=$(curl -sf "https://api.github.com/gists/${GIST_ID}")
-
-          if [ -z "$gist_json" ]; then
-            echo "::error::Failed to fetch recovery gist"
-            exit 1
-          fi
-
-          # Extract encrypted content from the gist
-          encrypted_content=$(echo "$gist_json" | jq -r '.files | to_entries | first | .value.content')
-
-          if [ -z "$encrypted_content" ]; then
-            echo "::error::Failed to extract gist content"
-            exit 1
-          fi
-
-          # Decrypt gist content using generic key (LOCKBOX_RECOVERY + repo)
-          cat > /tmp/decrypt_gist.rb <<'RUBY_DECRYPT'
-          require 'openssl'
-          require 'base64'
-          require 'json'
-          require 'digest'
-
-          def derive_key(pass)
-            Digest::SHA256.digest(pass)
-          end
-
-          def decrypt(encrypted_blob, pass)
-            key = derive_key(pass)
-            package = JSON.parse(Base64.strict_decode64(encrypted_blob))
-
-            cipher = OpenSSL::Cipher.new('aes-256-gcm')
-            cipher.decrypt
-            cipher.key = key
-            cipher.iv = Base64.strict_decode64(package['iv'])
-            cipher.auth_tag = Base64.strict_decode64(package['auth_tag'])
-
-            decrypted = cipher.update(Base64.strict_decode64(package['ciphertext'])) + cipher.final
-            decrypted
-          end
-
-          encrypted = ENV['ENCRYPTED_CONTENT']
-          encryption_key = "LOCKBOX_RECOVERY:#{ENV['REPO']}"
-
-          decrypted_json = decrypt(encrypted, encryption_key)
-          gist_data = JSON.parse(decrypted_json)
-
-          puts gist_data['key']
-          RUBY_DECRYPT
-
-          TEMP_KEY=$(ENCRYPTED_CONTENT="$encrypted_content" ruby /tmp/decrypt_gist.rb)
-          rm -f /tmp/decrypt_gist.rb
-
-          if [ -z "$TEMP_KEY" ]; then
-            echo "::error::Failed to decrypt temp key from gist"
-            exit 1
-          fi
-
-          # Export temp key for next step (masked from logs)
-          echo "::add-mask::$TEMP_KEY"
-          echo "temp_key=$TEMP_KEY" >> $GITHUB_OUTPUT
-
-      - name: Encrypt secrets with temp recovery key
+      - name: Encrypt secrets with public key (hybrid encryption)
         id: encrypt
         env:
-          TEMP_KEY: ${{ steps.find_key.outputs.temp_key }}
+          PUBLIC_KEY: ${{ inputs.public_key }}
           SECRET_NAMES: ${{ inputs.secret_names }}
           ALL_SECRETS: ${{ toJson(secrets) }}
         run: |
           echo "::notice::Recovering secrets: ${{ inputs.secret_names }}"
 
-          if [ -z "$TEMP_KEY" ]; then
-            echo "::error::Temp key not found"
-            exit 1
-          fi
-
-          # Create a temporary Ruby script to encrypt all secrets
+          # Create hybrid encryption script
           cat > /tmp/encrypt_secrets.rb <<'RUBY_SCRIPT'
           require 'openssl'
           require 'base64'
           require 'json'
-          require 'digest'
           require 'time'
 
-          def derive_key(temp_key)
-            Digest::SHA256.digest(temp_key)
-          end
+          def encrypt_hybrid(data, public_key_pem)
+            # Generate random AES-256 key
+            aes_key = OpenSSL::Random.random_bytes(32)
 
-          def encrypt(data, temp_key)
+            # Encrypt data with AES-256-GCM
             cipher = OpenSSL::Cipher.new('aes-256-gcm')
             cipher.encrypt
-
-            key = derive_key(temp_key)
-            cipher.key = key
+            cipher.key = aes_key
             iv = cipher.random_iv
-            encrypted = cipher.update(data) + cipher.final
+            encrypted_data = cipher.update(data) + cipher.final
             auth_tag = cipher.auth_tag
 
+            # Encrypt AES key with RSA public key
+            public_key = OpenSSL::PKey::RSA.new(public_key_pem)
+            encrypted_aes_key = public_key.public_encrypt(aes_key)
+
+            # Package everything
             package = {
-              'version' => '1',
-              'ciphertext' => Base64.strict_encode64(encrypted),
+              'version' => '2',
+              'encrypted_key' => Base64.strict_encode64(encrypted_aes_key),
+              'ciphertext' => Base64.strict_encode64(encrypted_data),
               'iv' => Base64.strict_encode64(iv),
               'auth_tag' => Base64.strict_encode64(auth_tag)
             }
@@ -143,18 +71,18 @@ jobs:
             Base64.strict_encode64(package.to_json)
           end
 
-          # Read temp key from environment
-          temp_key = ENV['TEMP_KEY']
+          # Read public key from environment
+          public_key_pem = ENV['PUBLIC_KEY']
 
-          if temp_key.nil? || temp_key.empty?
-            STDERR.puts "ERROR: TEMP_KEY is empty"
+          if public_key_pem.nil? || public_key_pem.empty?
+            STDERR.puts "ERROR: PUBLIC_KEY is empty"
             exit 1
           end
 
-          # Parse secret names from comma-separated list
+          # Parse secret names
           secret_names = ENV['SECRET_NAMES'].split(',').map(&:strip)
 
-          # Parse all secrets from JSON (passed as environment variable)
+          # Parse all secrets
           begin
             all_secrets = JSON.parse(ENV['ALL_SECRETS'] || '{}')
           rescue JSON::ParserError => e
@@ -162,11 +90,10 @@ jobs:
             exit 1
           end
 
-          # Build output map
+          # Encrypt each secret
           encrypted_secrets = {}
 
           secret_names.each do |secret_name|
-            # Get secret value from the secrets hash
             secret_value = all_secrets[secret_name]
 
             if secret_value.nil? || secret_value.empty?
@@ -174,8 +101,7 @@ jobs:
               next
             end
 
-            # Encrypt the secret
-            encrypted_secrets[secret_name] = encrypt(secret_value, temp_key)
+            encrypted_secrets[secret_name] = encrypt_hybrid(secret_value, public_key_pem)
           end
 
           # Output as JSON
@@ -187,11 +113,8 @@ jobs:
           puts JSON.pretty_generate(output)
           RUBY_SCRIPT
 
-          # Run the encryption script and capture output
-          encrypted_json=$(ruby /tmp/encrypt_secrets.rb)
+          # Run encryption and output results
+          ruby /tmp/encrypt_secrets.rb
 
           # Clean up
           rm -f /tmp/encrypt_secrets.rb
-
-          # Output the full JSON (for log parsing)
-          echo "$encrypted_json"

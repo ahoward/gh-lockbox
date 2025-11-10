@@ -1,6 +1,7 @@
 require 'json'
 require 'open3'
 require 'time'
+require 'fileutils'
 
 module Lockbox
   module GitHub
@@ -466,6 +467,68 @@ module Lockbox
       )
 
       status.success? && !stdout.strip.empty?
+    end
+
+    # ========================================================================
+    # Private Key Storage (Ephemeral)
+    # ========================================================================
+
+    LOCKBOX_DIR = '.lockbox'.freeze
+
+    # Stores a private key in .lockbox/ directory
+    # @param secret_name [String] The secret name (for filename)
+    # @param private_key_pem [String] Private key in PEM format
+    # @return [String] Path to the stored key file
+    def store_private_key(secret_name, private_key_pem)
+      FileUtils.mkdir_p(LOCKBOX_DIR)
+
+      key_path = File.join(LOCKBOX_DIR, "recovery-#{secret_name}.key")
+      File.write(key_path, private_key_pem)
+      File.chmod(0600, key_path)  # Owner read/write only
+
+      key_path
+    end
+
+    # Reads a private key from .lockbox/ directory
+    # @param secret_name [String] The secret name
+    # @return [String] Private key PEM
+    # @raise [GitHubError] if key file not found
+    def read_private_key(secret_name)
+      key_path = File.join(LOCKBOX_DIR, "recovery-#{secret_name}.key")
+
+      unless File.exist?(key_path)
+        raise GitHubError, "Private key not found: #{key_path}"
+      end
+
+      File.read(key_path)
+    end
+
+    # Deletes a private key from .lockbox/ directory
+    # @param secret_name [String] The secret name
+    # @return [Boolean] true if deleted
+    def delete_private_key(secret_name)
+      key_path = File.join(LOCKBOX_DIR, "recovery-#{secret_name}.key")
+
+      if File.exist?(key_path)
+        File.delete(key_path)
+        true
+      else
+        false
+      end
+    end
+
+    # Cleans up all private keys in .lockbox/ directory
+    # @return [Integer] Number of keys deleted
+    def cleanup_private_keys
+      return 0 unless Dir.exist?(LOCKBOX_DIR)
+
+      count = 0
+      Dir.glob(File.join(LOCKBOX_DIR, 'recovery-*.key')).each do |key_file|
+        File.delete(key_file)
+        count += 1
+      end
+
+      count
     end
   end
 end

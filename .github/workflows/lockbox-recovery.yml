@@ -102,7 +102,7 @@ jobs:
         env:
           TEMP_KEY: ${{ steps.find_key.outputs.temp_key }}
           SECRET_NAMES: ${{ inputs.secret_names }}
-          SECRET_0: ${{ secrets.TEST_SECRET_1 }}
+          SECRET_0: ${{ secrets.SINGLE_TEST }}
         run: |
           echo "::notice::Recovering secrets: ${{ inputs.secret_names }}"
 
