@@ -111,9 +111,11 @@ jobs:
           }
 
           # Stop GitHub Actions command processing to prevent secret masking
-          puts '::stop-commands::lockbox-output'
+          # Use a unique random token that won't be masked
+          stop_token = "LOCKBOX#{Time.now.to_i}#{rand(100000)}"
+          puts "::stop-commands::#{stop_token}"
           puts JSON.pretty_generate(output)
-          puts '::lockbox-output::'
+          puts "::#{stop_token}::"
           RUBY_SCRIPT
 
           # Run encryption and output results
