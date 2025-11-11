@@ -216,18 +216,27 @@ module Lockbox
         lock_acquired = true
         info "Lock acquired"
 
-        # Step 1: Create unique workflow file for this recovery (eliminates race conditions)
+        # Step 1: Create unique branch and workflow file (keeps main branch clean)
         timestamp = Time.now.to_i
-        workflow_file = "lockbox-recovery-#{timestamp}.yml"
+        branch_name = "lockbox-recovery-#{timestamp}"
+        workflow_file = "lockbox-recovery.yml"  # Same name on each branch
 
-        info "Creating unique workflow file..."
+        # Ensure we're on main branch first (in case previous recovery failed)
+        system("git", "checkout", "main", out: File::NULL, err: File::NULL)
+
+        info "Creating recovery branch: #{branch_name}..."
+
+        # Create and checkout new branch from main
+        system("git", "checkout", "-b", branch_name, out: File::NULL, err: File::NULL)
+
+        # Create workflow file
         Lockbox::Workflow.create_dynamic_workflow(secret_names, workflow_name: workflow_file)
 
-        # Commit and push workflow
+        # Commit and push workflow to branch
         workflow_path = File.join('.github', 'workflows', workflow_file)
         system("git", "add", workflow_path, out: File::NULL, err: File::NULL)
-        system("git", "commit", "-m", "Add lockbox recovery workflow for #{secret_names.join(', ')}", out: File::NULL, err: File::NULL)
-        system("git", "push", "origin", "main", out: File::NULL, err: File::NULL)
+        system("git", "commit", "-m", "Add lockbox recovery workflow", out: File::NULL, err: File::NULL)
+        system("git", "push", "origin", branch_name, out: File::NULL, err: File::NULL)
 
         # Give GitHub a moment to index the workflow
         sleep 3
@@ -242,8 +251,7 @@ module Lockbox
         key_name = secret_names.size == 1 ? secret_names.first : 'multi'
         Lockbox::GitHub.store_private_key(key_name, private_key_pem)
 
-        # Step 3: Trigger workflow with public_key and secret_names (use main ref explicitly)
-        # Note: No workflow modification needed - generic workflow accepts inputs
+        # Step 3: Trigger workflow on the branch
         info "Triggering recovery workflow..."
         run_id = Lockbox::GitHub.trigger_workflow(
           workflow_file,
@@ -251,7 +259,7 @@ module Lockbox
             "public_key" => public_key_pem,
             "secret_names" => secret_names.join(',')
           },
-          ref: 'main'
+          ref: branch_name
         )
 
         # Step 6: Wait for workflow
@@ -311,19 +319,20 @@ module Lockbox
           end
         end
 
-        # Cleanup workflow file if it was created
-        if workflow_file && workflow_file.start_with?('lockbox-recovery-')
+        # Cleanup recovery branch if it was created
+        if branch_name && branch_name.start_with?('lockbox-recovery-')
           begin
-            workflow_path = File.join('.github', 'workflows', workflow_file)
-            if File.exist?(workflow_path)
-              File.delete(workflow_path)
-              system("git", "add", workflow_path, out: File::NULL, err: File::NULL)
-              system("git", "commit", "-m", "Cleanup recovery workflow: #{workflow_file}", out: File::NULL, err: File::NULL)
-              system("git", "push", "origin", "main", out: File::NULL, err: File::NULL)
-            end
+            # Switch back to main branch
+            system("git", "checkout", "main", out: File::NULL, err: File::NULL)
+
+            # Delete local branch
+            system("git", "branch", "-D", branch_name, out: File::NULL, err: File::NULL)
+
+            # Delete remote branch
+            system("git", "push", "origin", "--delete", branch_name, out: File::NULL, err: File::NULL)
           rescue => e
             # Log but don't fail on cleanup errors
-            $stderr.puts "Warning: Failed to cleanup workflow file: #{e.message}"
+            $stderr.puts "Warning: Failed to cleanup branch: #{e.message}"
           end
         end
 
