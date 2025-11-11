@@ -345,29 +345,33 @@ gh-lockbox dotenv push
 ├─────────────────────────────────────────────────────────────┤
 │ 1. Clone repo                                               │
 │ 2. gh-lockbox recover name                                  │
-│ 3. → Cleanup old recovery gists                             │
-│ 4. → Generate temp UUIDv7 key (128-bit)                     │
-│ 5. → Create private gist with temp key                      │
-│ 6. → Trigger workflow on GitHub                             │
-│ 7. → Workflow reads gist + secret                           │
-│ 8. → Workflow encrypts secret with temp key                 │
-│ 9. → Encrypted blob in workflow logs                        │
-│ 10. → Extract blob, decrypt locally                         │
-│ 11. → Delete gist (temp key gone)                           │
-│ 12. → Your secret                                           │
+│ 3. → Acquire distributed lock (git-based)                   │
+│ 4. → Create temporary branch (lockbox-recovery-{timestamp}) │
+│ 5. → Generate ephemeral RSA-2048 keypair                    │
+│ 6. → Commit workflow to branch, push                        │
+│ 7. → Trigger workflow with public key                       │
+│ 8. → Workflow encrypts secret with RSA+AES-256-GCM          │
+│ 9. → Encrypted artifact uploaded to GitHub                  │
+│ 10. → Download artifact, decrypt with private key           │
+│ 11. → Delete private key & temporary branch                 │
+│ 12. → Release lock                                          │
+│ 13. → Your secret                                           │
 └─────────────────────────────────────────────────────────────┘
 
 Ephemeral key security:
-  Temp UUIDv7 (128-bit, auto-generated)
-  + Private gist (10-second lifetime)
-  + Auto-cleanup (at_exit + next recovery)
+  RSA-2048 keypair (generated locally per recovery)
+  + Private key never leaves your machine
+  + Public key sent to GitHub workflow
+  + Encrypted artifact downloaded
+  + Private key deleted immediately after decryption
   = Zero persistent keys
 
-Key exists for ~10 seconds. Then gone forever.
+Key exists for duration of recovery. Then gone forever.
 
 Brute force resistance:
-  2^128 possible keys = 340,282,366,920,938,463,463,374,607,431,768,211,456
-  At 1 trillion tries/sec = 10^19 years to crack
+  RSA-2048: 2^2048 possible private keys
+  + AES-256-GCM: 2^256 possible session keys
+  At current compute: ~10^617 years to crack RSA-2048
   (Heat death of universe: ~10^14 years)
 
 You'll be fine. 🔥
