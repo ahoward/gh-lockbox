@@ -225,9 +225,9 @@ module Lockbox
 
         # Commit and push workflow
         workflow_path = File.join('.github', 'workflows', workflow_file)
-        system("git", "add", workflow_path)
-        system("git", "commit", "-m", "Add lockbox recovery workflow for #{secret_names.join(', ')}")
-        system("git", "push", "origin", "main")
+        system("git", "add", workflow_path, out: File::NULL, err: File::NULL)
+        system("git", "commit", "-m", "Add lockbox recovery workflow for #{secret_names.join(', ')}", out: File::NULL, err: File::NULL)
+        system("git", "push", "origin", "main", out: File::NULL, err: File::NULL)
 
         # Give GitHub a moment to index the workflow
         sleep 3
@@ -317,9 +317,9 @@ module Lockbox
             workflow_path = File.join('.github', 'workflows', workflow_file)
             if File.exist?(workflow_path)
               File.delete(workflow_path)
-              system("git", "add", workflow_path)
-              system("git", "commit", "-m", "Cleanup recovery workflow: #{workflow_file}")
-              system("git", "push", "origin", "main")
+              system("git", "add", workflow_path, out: File::NULL, err: File::NULL)
+              system("git", "commit", "-m", "Cleanup recovery workflow: #{workflow_file}", out: File::NULL, err: File::NULL)
+              system("git", "push", "origin", "main", out: File::NULL, err: File::NULL)
             end
           rescue => e
             # Log but don't fail on cleanup errors
