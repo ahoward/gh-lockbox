@@ -227,7 +227,7 @@ module Lockbox
         workflow_path = File.join('.github', 'workflows', workflow_file)
         system("git", "add", workflow_path)
         system("git", "commit", "-m", "Add lockbox recovery workflow for #{secret_names.join(', ')}")
-        system("git", "push")
+        system("git", "push", "origin", "main")
 
         # Give GitHub a moment to index the workflow
         sleep 3
@@ -319,7 +319,7 @@ module Lockbox
               File.delete(workflow_path)
               system("git", "add", workflow_path)
               system("git", "commit", "-m", "Cleanup recovery workflow: #{workflow_file}")
-              system("git", "push")
+              system("git", "push", "origin", "main")
             end
           rescue => e
             # Log but don't fail on cleanup errors
