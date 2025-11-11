@@ -103,7 +103,7 @@ assert_file_exists() {
 cleanup_test_secrets() {
   local secrets=("$@")
   for secret in "${secrets[@]}"; do
-    ./bin/gh-lockbox remove "$secret" 2>/dev/null || true
+    ./bin/gh-lockbox remove "$secret" --force 2>/dev/null || true
   done
 }
 
