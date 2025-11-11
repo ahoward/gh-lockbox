@@ -77,7 +77,7 @@ module Lockbox
 
       # Update the Ruby script to use indexed environment variables instead of ALL_SECRETS
       workflow_content = workflow_content.sub(
-        /# Parse all secrets from JSON.*?^          end$/m,
+        /# Parse all secrets\n.*?^          end$/m,
         [
           "# Build secrets hash from indexed environment variables",
           "          all_secrets = {}",
