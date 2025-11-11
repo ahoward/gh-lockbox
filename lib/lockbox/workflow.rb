@@ -60,6 +60,9 @@ module Lockbox
       # Read template
       workflow_content = File.read(template_path)
 
+      # Remove concurrency section (not needed for unique workflow files)
+      workflow_content = workflow_content.gsub(/^# Queue recoveries.*?^concurrency:.*?cancel-in-progress: false\n\n/m, '')
+
       # Build the env section with literal secret references
       env_lines = secret_names.each_with_index.map do |name, idx|
         "          SECRET_#{idx}: ${{ secrets.#{name} }}"

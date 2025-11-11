@@ -216,19 +216,21 @@ module Lockbox
         lock_acquired = true
         info "Lock acquired"
 
-        # Step 1: Ensure generic workflow exists
-        workflow_file = Lockbox::Workflow.generic_workflow_filename
+        # Step 1: Create unique workflow file for this recovery (eliminates race conditions)
+        timestamp = Time.now.to_i
+        workflow_file = "lockbox-recovery-#{timestamp}.yml"
 
-        # Create generic workflow if it doesn't exist
-        unless Lockbox::Workflow.generic_workflow_exists?
-          info "Creating initial generic workflow..."
-          Lockbox::Workflow.create_generic_workflow
-          system("git", "add", Lockbox::Workflow.generic_workflow_path)
-          system("git", "commit", "-m", "Add lockbox generic recovery workflow")
-          system("git", "push")
-          info "Waiting for GitHub to index workflow..."
-          sleep 10
-        end
+        info "Creating unique workflow file..."
+        Lockbox::Workflow.create_dynamic_workflow(secret_names, workflow_name: workflow_file)
+
+        # Commit and push workflow
+        workflow_path = File.join('.github', 'workflows', workflow_file)
+        system("git", "add", workflow_path)
+        system("git", "commit", "-m", "Add lockbox recovery workflow for #{secret_names.join(', ')}")
+        system("git", "push")
+
+        # Give GitHub a moment to index the workflow
+        sleep 3
 
         # Step 2: Generate ephemeral RSA keypair
         info "Generating ephemeral keypair..."
@@ -306,6 +308,22 @@ module Lockbox
             Lockbox::GitHub.delete_private_key(key_name)
           rescue
             # Ignore cleanup errors
+          end
+        end
+
+        # Cleanup workflow file if it was created
+        if workflow_file && workflow_file.start_with?('lockbox-recovery-')
+          begin
+            workflow_path = File.join('.github', 'workflows', workflow_file)
+            if File.exist?(workflow_path)
+              File.delete(workflow_path)
+              system("git", "add", workflow_path)
+              system("git", "commit", "-m", "Cleanup recovery workflow: #{workflow_file}")
+              system("git", "push")
+            end
+          rescue => e
+            # Log but don't fail on cleanup errors
+            $stderr.puts "Warning: Failed to cleanup workflow file: #{e.message}"
           end
         end
 
