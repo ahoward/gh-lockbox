@@ -222,31 +222,21 @@ module Lockbox
         workflow_file = "lockbox-recovery.yml"  # Same name on each branch
 
         # Ensure we're on main branch first (in case previous recovery failed)
-        unless system("git", "checkout", "main", out: File::NULL, err: File::NULL)
-          raise Lockbox::GitHub::GitHubError, "Failed to checkout main branch"
-        end
+        Lockbox::Util.sys!("git", "checkout", "main")
 
         info "Creating recovery branch: #{branch_name}..."
 
         # Create and checkout new branch from main
-        unless system("git", "checkout", "-b", branch_name, out: File::NULL, err: File::NULL)
-          raise Lockbox::GitHub::GitHubError, "Failed to create recovery branch: #{branch_name}"
-        end
+        Lockbox::Util.sys!("git", "checkout", "-b", branch_name)
 
         # Create workflow file
         Lockbox::Workflow.create_dynamic_workflow(secret_names, workflow_name: workflow_file)
 
         # Commit and push workflow to branch
         workflow_path = File.join('.github', 'workflows', workflow_file)
-        unless system("git", "add", workflow_path, out: File::NULL, err: File::NULL)
-          raise Lockbox::GitHub::GitHubError, "Failed to stage workflow file"
-        end
-        unless system("git", "commit", "-m", "Add lockbox recovery workflow", out: File::NULL, err: File::NULL)
-          raise Lockbox::GitHub::GitHubError, "Failed to commit workflow file"
-        end
-        unless system("git", "push", "origin", branch_name, out: File::NULL, err: File::NULL)
-          raise Lockbox::GitHub::GitHubError, "Failed to push recovery branch to origin"
-        end
+        Lockbox::Util.sys!("git", "add", workflow_path)
+        Lockbox::Util.sys!("git", "commit", "-m", "Add lockbox recovery workflow")
+        Lockbox::Util.sys!("git", "push", "origin", branch_name)
 
         # Give GitHub a moment to index the workflow
         sleep 3
@@ -300,7 +290,9 @@ module Lockbox
         # Output the secret(s)
         if secret_names.size == 1
           # Single secret: output plain value (backwards compatible)
-          puts decrypted_secrets[secret_names.first]
+          # Normalize the name to match GitHub's key format
+          normalized_name = Lockbox::GitHub.normalize_secret_name(secret_names.first)
+          puts decrypted_secrets[normalized_name]
         else
           # Multiple secrets: output JSON
           require 'json'
@@ -331,24 +323,28 @@ module Lockbox
 
         # Cleanup recovery branch if it was created
         if branch_name && branch_name.start_with?('lockbox-recovery-')
+          # Switch back to main branch (non-fatal if fails)
           begin
-            # Switch back to main branch
-            unless system("git", "checkout", "main", out: File::NULL, err: File::NULL)
-              $stderr.puts "Warning: Failed to checkout main branch during cleanup"
-            end
+            Lockbox::Util.sys!("git", "checkout", "main")
+          rescue Lockbox::Util::CommandError => e
+            $stderr.puts "Warning: Failed to checkout main during cleanup"
+            $stderr.puts e.message
+          end
 
-            # Delete local branch
-            unless system("git", "branch", "-D", branch_name, out: File::NULL, err: File::NULL)
-              $stderr.puts "Warning: Failed to delete local branch: #{branch_name}"
-            end
+          # Delete local branch (non-fatal if fails)
+          begin
+            Lockbox::Util.sys!("git", "branch", "-D", branch_name)
+          rescue Lockbox::Util::CommandError => e
+            $stderr.puts "Warning: Failed to delete local branch: #{branch_name}"
+            $stderr.puts e.message
+          end
 
-            # Delete remote branch
-            unless system("git", "push", "origin", "--delete", branch_name, out: File::NULL, err: File::NULL)
-              $stderr.puts "Warning: Failed to delete remote branch: #{branch_name}"
-            end
-          rescue => e
-            # Log but don't fail on cleanup errors
-            $stderr.puts "Warning: Failed to cleanup branch: #{e.message}"
+          # Delete remote branch (non-fatal if fails)
+          begin
+            Lockbox::Util.sys!("git", "push", "origin", "--delete", branch_name)
+          rescue Lockbox::Util::CommandError => e
+            $stderr.puts "Warning: Failed to delete remote branch: #{branch_name}"
+            $stderr.puts e.message
           end
         end
 

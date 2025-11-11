@@ -424,45 +424,39 @@ module Lockbox
 
       loop do
         # Try to create and push lock branch
-        stdout, stderr, status = Open3.capture3(
-          'git', 'checkout', '-b', lock_branch
-        )
+        checkout_result = Lockbox::Util.sys('git', 'checkout', '-b', lock_branch)
 
-        if status.success?
+        if checkout_result
           # Successfully created branch locally, now try to push it
-          stdout, stderr, status = Open3.capture3(
-            'git', 'push', 'origin', lock_branch
-          )
+          push_result = Lockbox::Util.sys('git', 'push', 'origin', lock_branch)
 
-          if status.success?
+          if push_result
             # Verify we actually own the lock by checking the commit SHA
-            # Get local commit SHA
-            local_sha, _, _ = Open3.capture3('git', 'rev-parse', lock_branch)
-            local_sha = local_sha.strip
+            local_result = Lockbox::Util.sys!('git', 'rev-parse', lock_branch)
+            local_sha = local_result[:stdout].strip
 
-            # Get remote commit SHA
-            remote_sha, _, _ = Open3.capture3('git', 'ls-remote', 'origin', lock_branch)
-            remote_sha = remote_sha.split.first.to_s.strip
+            remote_result = Lockbox::Util.sys!('git', 'ls-remote', 'origin', lock_branch)
+            remote_sha = remote_result[:stdout].split.first.to_s.strip
 
             # Switch back to main
-            system('git', 'checkout', 'main', out: File::NULL, err: File::NULL)
+            Lockbox::Util.sys('git', 'checkout', 'main')
 
             if local_sha == remote_sha && !local_sha.empty?
               # We truly own the lock
               return true
             else
               # Someone else pushed at the same time, retry
-              system('git', 'branch', '-D', lock_branch, out: File::NULL, err: File::NULL)
+              Lockbox::Util.sys('git', 'branch', '-D', lock_branch)
             end
           else
             # Push failed, lock already exists remotely
             # Delete local branch and retry
-            system('git', 'checkout', 'main', out: File::NULL, err: File::NULL)
-            system('git', 'branch', '-D', lock_branch, out: File::NULL, err: File::NULL)
+            Lockbox::Util.sys('git', 'checkout', 'main')
+            Lockbox::Util.sys('git', 'branch', '-D', lock_branch)
           end
         else
           # Branch already exists locally, delete it first
-          system('git', 'branch', '-D', lock_branch, out: File::NULL, err: File::NULL)
+          Lockbox::Util.sys('git', 'branch', '-D', lock_branch)
         end
 
         # Check timeout
@@ -482,14 +476,12 @@ module Lockbox
       lock_branch = "lockbox-lock-#{lock_name}"
 
       # Delete remote lock branch
-      stdout, stderr, status = Open3.capture3(
-        'git', 'push', 'origin', '--delete', lock_branch
-      )
+      result = Lockbox::Util.sys!('git', 'push', 'origin', '--delete', lock_branch)
 
-      # Also delete local lock branch if it exists
-      system('git', 'branch', '-D', lock_branch, out: File::NULL, err: File::NULL)
+      # Also delete local lock branch if it exists (non-fatal)
+      Lockbox::Util.sys('git', 'branch', '-D', lock_branch)
 
-      status.success?
+      result[:status].success?
     end
 
     # Checks if a lock is currently held

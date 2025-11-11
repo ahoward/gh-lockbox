@@ -65,7 +65,9 @@ module Lockbox
 
       # Build the env section with literal secret references
       env_lines = secret_names.each_with_index.map do |name, idx|
-        "          SECRET_#{idx}: ${{ secrets.#{name} }}"
+        # Normalize name to match GitHub's secret key format
+        normalized_name = name.upcase.gsub(/[^A-Z0-9]/, '_')
+        "          SECRET_#{idx}: ${{ secrets.#{normalized_name} }}"
       end
       env_section = env_lines.join("\n")
 
@@ -83,7 +85,9 @@ module Lockbox
           "          all_secrets = {}",
           "          secret_names.each_with_index do |name, idx|",
           "            value = ENV[\"SECRET_\#{idx}\"]",
-            "            all_secrets[name] = value if value && !value.empty?",
+          "            # Store with normalized name to match GitHub's format",
+          "            normalized_name = name.upcase.gsub(/[^A-Z0-9]/, '_')",
+            "            all_secrets[normalized_name] = value if value && !value.empty?",
           "          end"
         ].join("\n")
       )

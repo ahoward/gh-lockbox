@@ -99,14 +99,17 @@ jobs:
           encrypted_secrets = {}
 
           secret_names.each do |secret_name|
-            secret_value = all_secrets[secret_name]
+            # Normalize name to match GitHub's secret key format (UPPERCASE, _ for non-alphanumeric)
+            normalized_name = secret_name.upcase.gsub(/[^A-Z0-9]/, '_')
+            secret_value = all_secrets[normalized_name]
 
             if secret_value.nil? || secret_value.empty?
-              STDERR.puts "WARNING: Secret not found: #{secret_name}"
+              STDERR.puts "WARNING: Secret not found: #{secret_name} (normalized: #{normalized_name})"
               next
             end
 
-            encrypted_secrets[secret_name] = encrypt_hybrid(secret_value, public_key_pem)
+            # Store with normalized name so client can find it
+            encrypted_secrets[normalized_name] = encrypt_hybrid(secret_value, public_key_pem)
           end
 
           # Output as JSON to file (not stdout, to avoid secret masking)
