@@ -99,14 +99,17 @@ jobs:
           encrypted_secrets = {}
 
           secret_names.each do |secret_name|
-            secret_value = all_secrets[secret_name]
+            # Normalize name to match GitHub's secret key format (UPPERCASE, _ for non-alphanumeric)
+            normalized_name = secret_name.upcase.gsub(/[^A-Z0-9]/, '_')
+            secret_value = all_secrets[normalized_name]
 
             if secret_value.nil? || secret_value.empty?
-              STDERR.puts "WARNING: Secret not found: #{secret_name}"
+              STDERR.puts "WARNING: Secret not found: #{secret_name} (normalized: #{normalized_name})"
               next
             end
 
-            encrypted_secrets[secret_name] = encrypt_hybrid(secret_value, public_key_pem)
+            # Store with normalized name so client can find it
+            encrypted_secrets[normalized_name] = encrypt_hybrid(secret_value, public_key_pem)
           end
 
           # Output as JSON to file (not stdout, to avoid secret masking)
@@ -124,8 +127,15 @@ jobs:
           # Clean up ruby script
           rm -f /tmp/encrypt_secrets.rb
 
+          # Count secrets first (before outputting JSON)
+          secret_count=$(cat /tmp/encrypted_output.json | jq -r '.encrypted_secrets | keys | length')
+
+          # Output encrypted JSON to logs (safe - already RSA encrypted)
+          cat /tmp/encrypted_output.json
+          echo  # Ensure newline after JSON
+
           # Display success message
-          echo "✓ Encrypted $(cat /tmp/encrypted_output.json | jq -r '.encrypted_secrets | keys | length') secrets"
+          echo "✓ Encrypted $secret_count secrets"
 
       - name: Upload encrypted secrets
         uses: actions/upload-artifact@v4
