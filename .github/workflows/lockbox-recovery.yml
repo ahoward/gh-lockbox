@@ -130,16 +130,16 @@ jobs:
           # Count secrets first (before outputting JSON)
           secret_count=$(cat /tmp/encrypted_output.json | jq -r '.encrypted_secrets | keys | length')
 
-          # Output encrypted JSON to logs (safe - already RSA encrypted)
-          cat /tmp/encrypted_output.json
-          echo  # Ensure newline after JSON
-
           # Display success message
           echo "✓ Encrypted $secret_count secrets"
 
-      - name: Upload encrypted secrets
-        uses: actions/upload-artifact@v4
-        with:
-          name: encrypted-secrets
-          path: /tmp/encrypted_output.json
-          retention-days: 1
+          # Move encrypted output to repo and commit
+          mv /tmp/encrypted_output.json encrypted_secrets.json
+
+      - name: Commit encrypted secrets to branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add encrypted_secrets.json
+          git commit -m "Add encrypted secrets for recovery"
+          git push

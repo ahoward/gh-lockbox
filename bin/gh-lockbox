@@ -1,5 +1,6 @@
 #!/usr/bin/env ruby
 
+require 'json'
 require_relative '../lib/lockbox'
 
 module Lockbox
@@ -216,30 +217,21 @@ module Lockbox
         lock_acquired = true
         info "Lock acquired"
 
-        # Step 1: Create unique branch and workflow file (keeps main branch clean)
+        # Step 1: Create unique branch for this recovery
         timestamp = Time.now.to_i
         branch_name = "lockbox-recovery-#{timestamp}"
-        workflow_file = "lockbox-recovery.yml"  # Same name on each branch
+        workflow_file = "lockbox-recovery.yml"
 
-        # Ensure we're on main branch first (in case previous recovery failed)
+        # Ensure we're on main first
         Lockbox::Util.sys!("git", "checkout", "main")
 
+        # Create and push new branch from main
         info "Creating recovery branch: #{branch_name}..."
-
-        # Create and checkout new branch from main
         Lockbox::Util.sys!("git", "checkout", "-b", branch_name)
+        Lockbox::Util.sys!("git", "push", "-u", "origin", branch_name)
 
-        # Create workflow file
-        Lockbox::Workflow.create_dynamic_workflow(secret_names, workflow_name: workflow_file)
-
-        # Commit and push workflow to branch
-        workflow_path = File.join('.github', 'workflows', workflow_file)
-        Lockbox::Util.sys!("git", "add", workflow_path)
-        Lockbox::Util.sys!("git", "commit", "-m", "Add lockbox recovery workflow")
-        Lockbox::Util.sys!("git", "push", "origin", branch_name)
-
-        # Give GitHub a moment to index the workflow
-        sleep 3
+        # Give GitHub a moment to index
+        sleep 2
 
         # Step 2: Generate ephemeral RSA keypair
         info "Generating ephemeral keypair..."
@@ -251,7 +243,7 @@ module Lockbox
         key_name = secret_names.size == 1 ? secret_names.first : 'multi'
         Lockbox::GitHub.store_private_key(key_name, private_key_pem)
 
-        # Step 3: Trigger workflow on the branch
+        # Step 3: Trigger workflow on branch
         info "Triggering recovery workflow..."
         run_id = Lockbox::GitHub.trigger_workflow(
           workflow_file,
@@ -266,20 +258,72 @@ module Lockbox
         info "Waiting for workflow to complete..."
         Lockbox::GitHub.wait_for_workflow(run_id)
 
-        # Step 7: Download encrypted secrets artifact
+        # Step 7: Fetch encrypted secrets from branch (with exponential backoff)
         info "Retrieving encrypted secrets..."
-        encrypted_secrets_map = Lockbox::GitHub.download_encrypted_artifact(run_id)
-        unless encrypted_secrets_map
-          error "Failed to retrieve encrypted secrets artifact"
-          error "The workflow may have failed. Check: gh run view #{run_id}"
-          exit 1
+        encrypted_secrets_map = nil
+        retry_delay = 0.5  # Start with 500ms
+        max_delay = 30     # Cap at 30 seconds
+        attempt = 0
+
+        loop do
+          # Check if workflow is still running or succeeded
+          status_result = Lockbox::Util.sys('gh', 'run', 'view', run_id.to_s, '--json', 'status,conclusion')
+          if status_result
+            status_json = JSON.parse(status_result[:stdout])
+            workflow_status = status_json['status']
+            workflow_conclusion = status_json['conclusion']
+
+            # If workflow failed, stop trying
+            if workflow_status == 'completed' && workflow_conclusion != 'success'
+              error "Workflow failed with conclusion: #{workflow_conclusion}"
+              error "Check logs: gh run view #{run_id} --log"
+              exit 1
+            end
+          end
+
+          # Try to fetch encrypted file from branch
+          fetch_result = Lockbox::Util.sys('git', 'fetch', 'origin', branch_name)
+          if fetch_result
+            # Try to read the file from the remote branch
+            show_result = Lockbox::Util.sys('git', 'show', "origin/#{branch_name}:encrypted_secrets.json")
+            if show_result
+              begin
+                parsed = JSON.parse(show_result[:stdout])
+                encrypted_secrets_map = parsed['encrypted_secrets']
+                break if encrypted_secrets_map
+              rescue JSON::ParserError
+                # File exists but isn't valid JSON yet, keep retrying
+              end
+            end
+          end
+
+          # Exponential backoff with cap
+          attempt += 1
+          info "Encrypted secrets not ready yet, waiting #{retry_delay}s... (attempt #{attempt})"
+          sleep retry_delay
+          retry_delay = [retry_delay * 2.0, max_delay].min  # Double each time
         end
 
         # Step 8: Decrypt all secrets with private key (hybrid decryption)
         info "Decrypting secrets..."
         decrypted_secrets = {}
+        failed_secrets = []
         encrypted_secrets_map.each do |name, encrypted_blob|
-          decrypted_secrets[name] = Lockbox::Crypto.decrypt_hybrid(encrypted_blob, private_key_pem)
+          begin
+            decrypted_secrets[name] = Lockbox::Crypto.decrypt_hybrid(encrypted_blob, private_key_pem)
+          rescue Lockbox::Crypto::DecryptionError, ArgumentError => e
+            # Skip secrets that can't be decrypted (likely not lockbox secrets)
+            failed_secrets << name
+            warn "Skipping #{name}: not a valid lockbox secret"
+          end
+        end
+
+        if decrypted_secrets.empty?
+          error "No valid lockbox secrets could be decrypted"
+          unless failed_secrets.empty?
+            error "Failed to decrypt: #{failed_secrets.join(', ')}"
+          end
+          exit 1
         end
 
         # Step 9: Delete private key
