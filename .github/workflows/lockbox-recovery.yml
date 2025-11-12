@@ -20,6 +20,10 @@ concurrency:
   group: lockbox-recovery
   cancel-in-progress: false
 
+# Need write permission to commit encrypted secrets back to branch
+permissions:
+  contents: write
+
 jobs:
   recover:
     runs-on: ubuntu-latest
