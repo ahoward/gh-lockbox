@@ -13,6 +13,9 @@
 # Used by dotenv library to load environment variables.
 .env
 
+# Lockbox private keys (ephemeral, never commit)
+.lockbox/
+
 # Ignore Byebug command history file.
 .byebug_history
 

@@ -60,9 +60,14 @@ module Lockbox
       # Read template
       workflow_content = File.read(template_path)
 
+      # Remove concurrency section (not needed for unique workflow files)
+      workflow_content = workflow_content.gsub(/^# Queue recoveries.*?^concurrency:.*?cancel-in-progress: false\n\n/m, '')
+
       # Build the env section with literal secret references
       env_lines = secret_names.each_with_index.map do |name, idx|
-        "          SECRET_#{idx}: ${{ secrets.#{name} }}"
+        # Normalize name to match GitHub's secret key format
+        normalized_name = name.upcase.gsub(/[^A-Z0-9]/, '_')
+        "          SECRET_#{idx}: ${{ secrets.#{normalized_name} }}"
       end
       env_section = env_lines.join("\n")
 
@@ -74,13 +79,15 @@ module Lockbox
 
       # Update the Ruby script to use indexed environment variables instead of ALL_SECRETS
       workflow_content = workflow_content.sub(
-        /# Parse all secrets from JSON.*?^          end$/m,
+        /# Parse all secrets\n.*?^          end$/m,
         [
           "# Build secrets hash from indexed environment variables",
           "          all_secrets = {}",
           "          secret_names.each_with_index do |name, idx|",
           "            value = ENV[\"SECRET_\#{idx}\"]",
-            "            all_secrets[name] = value if value && !value.empty?",
+          "            # Store with normalized name to match GitHub's format",
+          "            normalized_name = name.upcase.gsub(/[^A-Z0-9]/, '_')",
+            "            all_secrets[normalized_name] = value if value && !value.empty?",
           "          end"
         ].join("\n")
       )
@@ -178,11 +185,15 @@ module Lockbox
 
       json_lines = []
       in_json = false
+      previous_line = nil
 
       logs.each_line do |line|
-        # Check if line contains opening brace for our JSON
-        if line =~ /\{\s*$/ || line =~ /"encrypted_secrets"/
+        # Check if line contains our JSON start
+        # Only match "encrypted_secrets" to avoid capturing env var output like "ALL_SECRETS: {"
+        if line =~ /"encrypted_secrets"/
           in_json = true
+          # Add the previous line (the opening brace) if we have it
+          json_lines << previous_line if previous_line
         end
 
         if in_json
@@ -201,6 +212,13 @@ module Lockbox
             if clean_line.strip == '}'
               break
             end
+          end
+        else
+          # Store this line in case the next line triggers JSON capture
+          parts = line.split("\t", 3)
+          content = parts[2] if parts.length >= 3
+          if content
+            previous_line = content.sub(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s*/, '')
           end
         end
       end

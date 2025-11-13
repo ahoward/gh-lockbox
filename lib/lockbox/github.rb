@@ -1,6 +1,7 @@
 require 'json'
 require 'open3'
 require 'time'
+require 'fileutils'
 
 module Lockbox
   module GitHub
@@ -222,6 +223,42 @@ module Lockbox
       stdout
     end
 
+    # Downloads encrypted secrets artifact from workflow run
+    # @param run_id [String] Workflow run ID
+    # @return [Hash, nil] Map of secret names to encrypted blobs, or nil if failed
+    def download_encrypted_artifact(run_id)
+      require 'tmpdir'
+      require 'fileutils'
+
+      Dir.mktmpdir do |tmpdir|
+        # Download artifact using gh CLI
+        cmd = ['gh', 'run', 'download', run_id, '--name', 'encrypted-secrets', '--dir', tmpdir]
+        _stdout, stderr, status = Open3.capture3(*cmd)
+
+        unless status.success?
+          $stderr.puts "Failed to download artifact: #{stderr.strip}"
+          return nil
+        end
+
+        # Read the JSON file
+        json_file = File.join(tmpdir, 'encrypted_output.json')
+        unless File.exist?(json_file)
+          $stderr.puts "Artifact file not found: #{json_file}"
+          return nil
+        end
+
+        json_content = File.read(json_file)
+        parsed = JSON.parse(json_content)
+        parsed['encrypted_secrets']
+      rescue JSON::ParserError => e
+        $stderr.puts "Failed to parse artifact JSON: #{e.message}"
+        nil
+      rescue => e
+        $stderr.puts "Failed to download artifact: #{e.message}"
+        nil
+      end
+    end
+
     # Checks if gh CLI is installed and authenticated
     # @return [Boolean] true if gh CLI is ready
     def gh_ready?
@@ -387,45 +424,39 @@ module Lockbox
 
       loop do
         # Try to create and push lock branch
-        stdout, stderr, status = Open3.capture3(
-          'git', 'checkout', '-b', lock_branch
-        )
+        checkout_result = Lockbox::Util.sys('git', 'checkout', '-b', lock_branch)
 
-        if status.success?
+        if checkout_result
           # Successfully created branch locally, now try to push it
-          stdout, stderr, status = Open3.capture3(
-            'git', 'push', 'origin', lock_branch
-          )
+          push_result = Lockbox::Util.sys('git', 'push', 'origin', lock_branch)
 
-          if status.success?
+          if push_result
             # Verify we actually own the lock by checking the commit SHA
-            # Get local commit SHA
-            local_sha, _, _ = Open3.capture3('git', 'rev-parse', lock_branch)
-            local_sha = local_sha.strip
+            local_result = Lockbox::Util.sys!('git', 'rev-parse', lock_branch)
+            local_sha = local_result[:stdout].strip
 
-            # Get remote commit SHA
-            remote_sha, _, _ = Open3.capture3('git', 'ls-remote', 'origin', lock_branch)
-            remote_sha = remote_sha.split.first.to_s.strip
+            remote_result = Lockbox::Util.sys!('git', 'ls-remote', 'origin', lock_branch)
+            remote_sha = remote_result[:stdout].split.first.to_s.strip
 
             # Switch back to main
-            system('git', 'checkout', 'main', out: File::NULL, err: File::NULL)
+            Lockbox::Util.sys('git', 'checkout', 'main')
 
             if local_sha == remote_sha && !local_sha.empty?
               # We truly own the lock
               return true
             else
               # Someone else pushed at the same time, retry
-              system('git', 'branch', '-D', lock_branch, out: File::NULL, err: File::NULL)
+              Lockbox::Util.sys('git', 'branch', '-D', lock_branch)
             end
           else
             # Push failed, lock already exists remotely
             # Delete local branch and retry
-            system('git', 'checkout', 'main', out: File::NULL, err: File::NULL)
-            system('git', 'branch', '-D', lock_branch, out: File::NULL, err: File::NULL)
+            Lockbox::Util.sys('git', 'checkout', 'main')
+            Lockbox::Util.sys('git', 'branch', '-D', lock_branch)
           end
         else
           # Branch already exists locally, delete it first
-          system('git', 'branch', '-D', lock_branch, out: File::NULL, err: File::NULL)
+          Lockbox::Util.sys('git', 'branch', '-D', lock_branch)
         end
 
         # Check timeout
@@ -445,14 +476,12 @@ module Lockbox
       lock_branch = "lockbox-lock-#{lock_name}"
 
       # Delete remote lock branch
-      stdout, stderr, status = Open3.capture3(
-        'git', 'push', 'origin', '--delete', lock_branch
-      )
+      result = Lockbox::Util.sys!('git', 'push', 'origin', '--delete', lock_branch)
 
-      # Also delete local lock branch if it exists
-      system('git', 'branch', '-D', lock_branch, out: File::NULL, err: File::NULL)
+      # Also delete local lock branch if it exists (non-fatal)
+      Lockbox::Util.sys('git', 'branch', '-D', lock_branch)
 
-      status.success?
+      result[:status].success?
     end
 
     # Checks if a lock is currently held
@@ -466,6 +495,68 @@ module Lockbox
       )
 
       status.success? && !stdout.strip.empty?
+    end
+
+    # ========================================================================
+    # Private Key Storage (Ephemeral)
+    # ========================================================================
+
+    LOCKBOX_DIR = '.lockbox'.freeze
+
+    # Stores a private key in .lockbox/ directory
+    # @param secret_name [String] The secret name (for filename)
+    # @param private_key_pem [String] Private key in PEM format
+    # @return [String] Path to the stored key file
+    def store_private_key(secret_name, private_key_pem)
+      FileUtils.mkdir_p(LOCKBOX_DIR)
+
+      key_path = File.join(LOCKBOX_DIR, "recovery-#{secret_name}.key")
+      File.write(key_path, private_key_pem)
+      File.chmod(0600, key_path)  # Owner read/write only
+
+      key_path
+    end
+
+    # Reads a private key from .lockbox/ directory
+    # @param secret_name [String] The secret name
+    # @return [String] Private key PEM
+    # @raise [GitHubError] if key file not found
+    def read_private_key(secret_name)
+      key_path = File.join(LOCKBOX_DIR, "recovery-#{secret_name}.key")
+
+      unless File.exist?(key_path)
+        raise GitHubError, "Private key not found: #{key_path}"
+      end
+
+      File.read(key_path)
+    end
+
+    # Deletes a private key from .lockbox/ directory
+    # @param secret_name [String] The secret name
+    # @return [Boolean] true if deleted
+    def delete_private_key(secret_name)
+      key_path = File.join(LOCKBOX_DIR, "recovery-#{secret_name}.key")
+
+      if File.exist?(key_path)
+        File.delete(key_path)
+        true
+      else
+        false
+      end
+    end
+
+    # Cleans up all private keys in .lockbox/ directory
+    # @return [Integer] Number of keys deleted
+    def cleanup_private_keys
+      return 0 unless Dir.exist?(LOCKBOX_DIR)
+
+      count = 0
+      Dir.glob(File.join(LOCKBOX_DIR, 'recovery-*.key')).each do |key_file|
+        File.delete(key_file)
+        count += 1
+      end
+
+      count
     end
   end
 end
