@@ -215,13 +215,26 @@ module Lockbox
       end
 
       begin
-        # Step 0: Acquire lock to prevent concurrent recoveries
+        # Step 0: Ensure workflow file exists (install on demand if missing)
+        unless Lockbox::Workflow.generic_workflow_exists?
+          info "Installing lockbox-recovery workflow..."
+          Lockbox::Workflow.create_generic_workflow
+
+          # Commit and push the workflow file
+          Lockbox::Util.sys!("git", "add", ".github/workflows/lockbox-recovery.yml")
+          Lockbox::Util.sys!("git", "commit", "-m", "Add lockbox-recovery workflow (auto-installed)")
+          Lockbox::Util.sys!("git", "push")
+
+          success "Workflow installed successfully"
+        end
+
+        # Step 1: Acquire lock to prevent concurrent recoveries
         info "Acquiring recovery lock..."
         Lockbox::GitHub.acquire_lock(lock_name: 'recovery', timeout: 300, retry_interval: 5)
         lock_acquired = true
         info "Lock acquired"
 
-        # Step 1: Create unique branch for this recovery
+        # Step 2: Create unique branch for this recovery
         timestamp = Time.now.to_i
         branch_name = "lockbox-recovery-#{timestamp}"
         workflow_file = "lockbox-recovery.yml"
@@ -237,7 +250,7 @@ module Lockbox
         # Give GitHub a moment to index
         sleep 2
 
-        # Step 2: Generate ephemeral RSA keypair
+        # Step 3: Generate ephemeral RSA keypair
         info "Generating ephemeral keypair..."
         keypair = Lockbox::Crypto.generate_keypair
         private_key_pem = keypair[:private_key]
@@ -247,7 +260,7 @@ module Lockbox
         key_name = secret_names.size == 1 ? secret_names.first : 'multi'
         Lockbox::GitHub.store_private_key(key_name, private_key_pem)
 
-        # Step 3: Trigger workflow on branch
+        # Step 4: Trigger workflow on branch
         info "Triggering recovery workflow..."
         run_id = Lockbox::GitHub.trigger_workflow(
           workflow_file,
@@ -258,11 +271,11 @@ module Lockbox
           ref: branch_name
         )
 
-        # Step 6: Wait for workflow
+        # Step 5: Wait for workflow
         info "Waiting for workflow to complete..."
         Lockbox::GitHub.wait_for_workflow(run_id)
 
-        # Step 7: Fetch encrypted secrets from branch (with exponential backoff)
+        # Step 6: Fetch encrypted secrets from branch (with exponential backoff)
         info "Retrieving encrypted secrets..."
         encrypted_secrets_map = nil
         retry_delay = 0.5  # Start with 500ms
@@ -308,7 +321,7 @@ module Lockbox
           retry_delay = [retry_delay * 2.0, max_delay].min  # Double each time
         end
 
-        # Step 8: Decrypt all secrets with private key (hybrid decryption)
+        # Step 7: Decrypt all secrets with private key (hybrid decryption)
         info "Decrypting secrets..."
         decrypted_secrets = {}
         failed_secrets = []
@@ -330,7 +343,7 @@ module Lockbox
           exit 1
         end
 
-        # Step 9: Delete private key
+        # Step 8: Delete private key
         info "Cleaning up private key..."
         Lockbox::GitHub.delete_private_key(key_name)
         private_key_pem = nil  # Mark as deleted
