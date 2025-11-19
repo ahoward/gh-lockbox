@@ -216,6 +216,7 @@ module Lockbox
 
       begin
         # Step 0: Ensure workflow file exists (install on demand if missing)
+        workflow_just_installed = false
         unless Lockbox::Workflow.generic_workflow_exists?
           info "Installing lockbox-recovery workflow..."
           Lockbox::Workflow.create_generic_workflow
@@ -226,6 +227,7 @@ module Lockbox
           Lockbox::Util.sys!("git", "push")
 
           success "Workflow installed successfully"
+          workflow_just_installed = true
         end
 
         # Step 1: Acquire lock to prevent concurrent recoveries
@@ -239,8 +241,15 @@ module Lockbox
         branch_name = "lockbox-recovery-#{timestamp}"
         workflow_file = "lockbox-recovery.yml"
 
-        # Ensure we're on main first
+        # Ensure we're on latest main
         Lockbox::Util.sys!("git", "checkout", "main")
+        Lockbox::Util.sys!("git", "pull", "--ff-only")
+
+        # If we just installed the workflow, give GitHub a moment to index it
+        if workflow_just_installed
+          info "Waiting for GitHub to index new workflow..."
+          sleep 5
+        end
 
         # Create and push new branch from main
         info "Creating recovery branch: #{branch_name}..."
