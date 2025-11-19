@@ -32,6 +32,8 @@ module Lockbox
         cmd_dotenv
       when 'dotenvx'
         cmd_dotenvx
+      when 'envrc'
+        cmd_envrc
       when 'cleanup'
         cmd_cleanup
       when 'verify', 'test'
@@ -639,6 +641,164 @@ module Lockbox
       exit 1
     end
 
+    def cmd_envrc
+      subcommand = @params[0]
+      filename = @params[1] || '.envrc'
+
+      case subcommand
+      when 'pull'
+        cmd_envrc_pull(filename)
+      when 'push'
+        cmd_envrc_push(filename)
+      else
+        error "Usage: gh-lockbox envrc <pull|push> [filename]"
+        error ""
+        error "Examples:"
+        error "  gh-lockbox envrc pull              # Pull all secrets to .envrc (append mode)"
+        error "  gh-lockbox envrc pull .envrc.local # Pull to .envrc.local"
+        error "  gh-lockbox envrc push              # Push .envrc to GitHub Secrets"
+        error "  gh-lockbox envrc push .envrc.local # Push .envrc.local"
+        exit 1
+      end
+    end
+
+    def cmd_envrc_pull(filename)
+      require 'json'
+      require 'open3'
+      require 'time'
+
+      # Check if direnv is installed (informational only)
+      check_direnv_installed
+
+      info "Recovering all secrets from GitHub..."
+
+      # Run recover command as subprocess to get JSON output
+      cmd = [File.expand_path(__FILE__), 'recover']
+      stdout, stderr, status = Open3.capture3(*cmd)
+
+      unless status.success?
+        error "Failed to recover secrets"
+        $stderr.puts stderr unless stderr.empty?
+        exit 1
+      end
+
+      # Extract JSON from stdout
+      lines = stdout.lines
+      json_start_idx = lines.index { |l| l.strip.start_with?('{') }
+
+      if json_start_idx.nil?
+        error "No secrets recovered"
+        exit 1
+      end
+
+      json_str = lines[json_start_idx..-1].join
+
+      begin
+        secrets_hash = JSON.parse(json_str)
+      rescue JSON::ParserError => e
+        error "Failed to parse secrets: #{e.message}"
+        exit 1
+      end
+
+      # Append secrets with comment markers (NEVER clobber existing file)
+      written_count = append_envrc_with_markers(filename, secrets_hash)
+
+      success "Appended #{written_count} secrets to #{filename}"
+      info "Review the file to merge any conflicts or duplicates"
+      info "Run 'direnv allow' to activate changes" if Lockbox::Util.sys('which', 'direnv')
+    end
+
+    def cmd_envrc_push(filename)
+      # Check if direnv is installed (informational only)
+      check_direnv_installed
+
+      unless File.exist?(filename)
+        error "File not found: #{filename}"
+        exit 1
+      end
+
+      # Parse .envrc file (reuse existing parser with modifications)
+      secrets = parse_envrc(filename)
+
+      if secrets.empty?
+        info "No secrets found in #{filename}"
+        exit 0
+      end
+
+      info "Pushing #{secrets.size} secret(s) to GitHub..."
+
+      # Store each secret
+      secrets.each do |key, value|
+        info "Storing: #{key}"
+        Lockbox::GitHub.store_secret(key, value)
+      end
+
+      success "Pushed #{secrets.size} secrets to GitHub"
+    end
+
+    # Check if direnv is installed (informational, not required)
+    def check_direnv_installed
+      result = Lockbox::Util.sys('which', 'direnv')
+      unless result
+        info "💡 Tip: Install direnv to auto-load .envrc files"
+        info "   https://direnv.net/"
+      end
+    end
+
+    # Append secrets to .envrc file with comment markers (SAFE - never clobbers)
+    # Returns the number of secrets written
+    def append_envrc_with_markers(filename, secrets_hash)
+      timestamp = Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC')
+
+      File.open(filename, 'a') do |f|
+        # Add separator comment
+        f.puts ""
+        f.puts "# === gh-lockbox recovered secrets (#{timestamp}) ==="
+
+        # Write all secrets with export statements
+        secrets_hash.each do |key, value|
+          # Escape value if needed (quotes for spaces, special chars)
+          escaped_value = value.match?(/[\s#"'$`\\]/) ? "\"#{value.gsub('"', '\\"')}\"" : value
+          f.puts "export #{key}=#{escaped_value}"
+        end
+
+        # Add closing comment
+        f.puts "# === end gh-lockbox recovery ==="
+      end
+
+      secrets_hash.size
+    end
+
+    # Parse a .envrc file into a hash
+    def parse_envrc(filename)
+      secrets = {}
+
+      File.readlines(filename).each do |line|
+        line = line.strip
+
+        # Skip comments and empty lines
+        next if line.empty? || line.start_with?('#')
+
+        # Parse export KEY=VALUE (support various formats)
+        if line =~ /^export\s+([A-Z_][A-Z0-9_]*)=(.*)$/
+          key = $1
+          value = $2
+
+          # Remove surrounding quotes if present
+          if (value.start_with?('"') && value.end_with?('"')) ||
+             (value.start_with?("'") && value.end_with?("'"))
+            value = value[1..-2]
+            # Unescape double quotes
+            value = value.gsub('\\"', '"')
+          end
+
+          secrets[key] = value
+        end
+      end
+
+      secrets
+    end
+
     # Append secrets to .env file with comment markers (SAFE - never clobbers)
     # Returns the number of secrets written
     def append_dotenv_with_markers(filename, secrets_hash)
@@ -928,6 +1088,7 @@ module Lockbox
           recover [name] [name2]    Recover secret(s) (no args = recover ALL secrets)
           dotenv <pull|push> [file] Pull secrets to .env or push .env to GitHub
           dotenvx <pull|push> [file] Pull/push with dotenvx (safe append mode, never clobbers)
+          envrc <pull|push> [file]  Pull secrets to .envrc or push .envrc to GitHub (direnv support)
           list                      List all stored secrets
           remove <name>             Remove a secret and its workflow
           cleanup                   Cleanup ephemeral private keys
